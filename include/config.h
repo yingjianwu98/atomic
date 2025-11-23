@@ -3,16 +3,14 @@
 
 #include <stdint.h>
 
-/* Max slots. Used in rdma.c */
-#define MAX_SLOTS (500000)
+#define MAX_SLOTS (1000000)
+#define FRONTIER_NODE (0)
+#define MAX_CONCURRENT_REQ (64)
+#define TRACK_SLOTS (1)
 
-/* Track slot stats */
-#define TRACK_SLOTS 1
+// #define DEBUG (0)
 
-/* Log messages */
-#define DEBUG 0
-
-#if DEBUG
+#ifdef DEBUG
 #include <stdio.h>
 #define __FAA_LOG(fmt, ...)                                                    \
   do {                                                                         \

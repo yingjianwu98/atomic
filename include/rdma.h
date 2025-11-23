@@ -30,9 +30,14 @@ struct rdma_ctx {
   uint8_t gid[16];
   struct ibv_pd *pd;
   struct ibv_mr *mr[2];
-  struct ibv_cq *cq;
-  struct ibv_qp **qp;
-  uint64_t *slots; // shared (RDMA accessible)
+  struct ibv_cq *cq;   // CQ for consensus operations
+  struct ibv_cq *fcq;  // CQ for frontier operations
+  struct ibv_qp **qp;  // QPs for consensus operations
+  struct ibv_qp **fqp; // QPs for frontier FAA
+  struct {             // Shared (RDMA accessible)
+    uint64_t frontier;
+    uint64_t slots[MAX_SLOTS];
+  } *shared_mem;
   uint64_t *results;
   struct prep_res *prepares;
   struct remote_attr *ra;
@@ -45,6 +50,9 @@ int rdma_init(struct rdma_ctx *r, struct config *c);
 
 /* Destroy RDMA context */
 void rdma_destroy(struct rdma_ctx *r);
+
+/* Get next slot from frontier node */
+uint64_t rdma_get_next_slot(struct rdma_ctx *r);
 
 /* Fast path operations */
 int rdma_bcas(struct rdma_ctx *r, uint32_t slot, uint64_t swp);

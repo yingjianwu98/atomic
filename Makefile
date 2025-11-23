@@ -1,28 +1,30 @@
 CC=gcc
-CFLAGS=-fPIC -O3 -Wall -Wextra -Iinclude -Werror # -g
+CFLAGS=-fPIC -O3 -Wall -Wextra -Iinclude -Werror
 LDFLAGS=-libverbs -shared
 LIB=libatomic.so
 PREFIX=/usr/local
 
 SRC=$(wildcard src/*.c)
 OBJ=$(SRC:.c=.o)
-
-TEST_CFLAGS=-g -fno-omit-frame-pointer ${CFLAGS}
-TEST_LDFLAGS=-Wl,-rpath,$(shell pwd) $(LIB)
+BENCH=$(patsubst %.c, %, $(wildcard bench/*.c))
 TESTS=$(patsubst %.c, %, $(wildcard tests/*.c))
+TEST_CFLAGS=${CFLAGS} #-g -fno-omit-frame-pointer 
+TEST_LDFLAGS=-Wl,-rpath,$(shell pwd) $(LIB)
 
-all: build tests
+all: build $(TESTS) $(BENCH)
+
+bench: build $(BENCH)
+
+tests: build $(TESTS)
 
 build: $(OBJ)
 	$(CC) -o $(LIB) $(OBJ) $(LDFLAGS)
-
-tests: build $(TESTS)
 
 $(TESTS): %: %.c
 	$(CC) $< $(TEST_CFLAGS) -o $@ $(TEST_LDFLAGS)
 
 $(BENCH): %: %.c
-	$(CC) $< $(CFLAGS) -o $@ $(BENCH_LDFLAGS)
+	$(CC) $< $(CFLAGS) -o $@ $(TEST_LDFLAGS)
 
 src/%.o: src/%.c
 	$(CC) -c $< -o $@ $(CFLAGS)
@@ -36,7 +38,7 @@ uninstall:
 	$(RM) -rf $(PREFIX)/include/atomic
 
 clean:
-	$(RM) -rf $(OBJ) $(TESTS) $(LIB)
+	$(RM) -rf $(OBJ) $(TESTS) $(BENCH) $(LIB)
 
 format:
 	find . -type f -name "*.c" -o -name "*.h" -exec clang-format -style=llvm -i {} \;

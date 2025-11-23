@@ -3,7 +3,7 @@
 
 #include "rdma.h"
 
-/* Per-node Distributed Consensus */
+/* Per-node context */
 struct node_ctx {
   uint16_t id;
   uint32_t seed;

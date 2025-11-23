@@ -3,6 +3,8 @@
 #include <immintrin.h>
 #include <unistd.h>
 
+#define MAX_RETRIES (5)
+
 int __try_fast_path(struct node_ctx *ctx, uint32_t target_slot) {
 #ifdef TRACK_SLOTS
     uint64_t ballot = gen_ballot(ctx->id);
@@ -11,7 +13,11 @@ int __try_fast_path(struct node_ctx *ctx, uint32_t target_slot) {
     uint64_t dif = ts_us() - start;
     __sync_bool_compare_and_swap(&ctx->s[target_slot].lat, 0, dif);
     __sync_bool_compare_and_swap(&ctx->s[target_slot].path, 0, 1);
-    if (!ret) __sync_bool_compare_and_swap(&ctx->s[target_slot].won, 0, 1);
+    if (!ret) {
+        __sync_bool_compare_and_swap(&ctx->s[target_slot].won, 0, 1);
+        fprintf(stdout, "%hu,%u,%lu,FAST\n", ctx->id, target_slot, dif);
+        fflush(stdout);
+    }
     return ret;
 #else
     uint64_t ballot = gen_ballot(ctx->id);
@@ -27,7 +33,11 @@ int __try_slow_path(struct node_ctx *ctx, uint32_t target_slot) {
     uint64_t dif = ts_us() - start;
     __sync_bool_compare_and_swap(&ctx->s[target_slot].lat, 0, dif);
     __sync_bool_compare_and_swap(&ctx->s[target_slot].path, 0, 2);
-    if (!ret) __sync_bool_compare_and_swap(&ctx->s[target_slot].won, 0, 1);
+    if (!ret) {
+        __sync_bool_compare_and_swap(&ctx->s[target_slot].won, 0, 1);
+        fprintf(stdout, "%hu,%u,%lu,SLOW\n", ctx->id, target_slot, dif);
+        fflush(stdout);
+    }
     return ret;
 #else
     uint64_t ballot = gen_ballot(ctx->id);
@@ -37,83 +47,63 @@ int __try_slow_path(struct node_ctx *ctx, uint32_t target_slot) {
 
 int64_t fetch_and_add(struct node_ctx *ctx) {
     struct rdma_ctx *r = &ctx->r;
-    static __thread uint64_t my_slot = 0;
-    static __thread int retry_count = 0;
-
+#ifdef DEBUG
+    static __thread uint64_t call_count = 0;
+    uint64_t this_call = ++call_count;
+#endif
     while (1) {
-        if (my_slot >= MAX_SLOTS) return -ENOMEM;
+        /* Get assigned slot */
+        uint64_t my_slot = rdma_get_next_slot(r);
+        if (my_slot == (uint64_t)-1) {
+            usleep(100);
+            continue;
+        } else if (my_slot >= MAX_SLOTS)
+            return -ENOMEM;
 
-        // 1. Try fast path
+        /* 1. Try fast path */
         int fast_res = __try_fast_path(ctx, my_slot);
-        if (fast_res == 0) {
-            retry_count = 0;
-            return my_slot++;
-        } else if (fast_res == 1) {
-            retry_count = 0;
-            my_slot++;
-            continue;
-        }
+        if (fast_res == 0)
+            return my_slot;  // this thread won
+        else if (fast_res == 1)
+            continue;  // slot commited by another thread
 
-        // 2. Fast path failed. Try slow path
+        /* 2. Fast path failed. Try slow path */
         int slow_res = __try_slow_path(ctx, my_slot);
-        if (slow_res == 0) {
-            retry_count = 0;
-            return my_slot++;
-        } else if (slow_res == 1) {
-            retry_count = 0;
-            my_slot++;
-            continue;
-        }
+        if (slow_res == 0)
+            return my_slot;  // this thread won
+        else if (slow_res == 1)
+            continue;  // slot commited by another thread
 
-        // 3. Both failed
-        retry_count++;
-
-        // Check again
-        uint64_t val = *(volatile uint64_t *)&r->slots[my_slot];
-        if (val != 0) {
-            my_slot++;
-            retry_count = 0;
-            continue;
-        }
-
-        // Backoff
-        if (retry_count > 5) {
-            my_slot++;  // give up on the slot
-            retry_count = 0;
-            continue;
-        } else if (retry_count < 3)
-            _mm_pause();
-        else
+        /* 3. Both paths failed. Retry the same slot. */
+        for (int retry_count = 0; retry_count < MAX_RETRIES; ++retry_count) {
+            uint64_t val = *(volatile uint64_t *)&r->shared_mem->slots[my_slot];
+            if (val != 0 || __try_slow_path(ctx, my_slot) >= 0)
+                break;  // slot filled
             usleep(1);
+        }
     }
 }
 
 int64_t test_and_set(struct node_ctx *ctx, uint32_t slot) {
     struct rdma_ctx *r = &ctx->r;
-    int retry_count = 0;
-
-    while (retry_count < 5) {
+    for (int retry_count = 0; retry_count < MAX_RETRIES; ++retry_count) {
         // 1. Try fast path
         int fast_res = rdma_btas(r, slot);
-
         if (fast_res == 0)
-            return 0;  // We won
+            return 0;  // this thread won
         else if (fast_res == 1)
-            return 1;  // Someone else won
+            return 1;  // another thread won
 
-        // 2. Fast path failed - try slow path
+        // 2. Fast path failed. Try slow path
         uint64_t ballot = gen_ballot(ctx->id);
         int slow_res = rdma_slow_path(r, slot, ballot, 1);
-
         if (slow_res == 0)
-            return 0;  // We won
+            return 0;  // this thread won
         else if (slow_res >= 0)
-            return 1;  // Someone else won
+            return 1;  // another thread won
 
-        // 3. Both failed. Retry
-        retry_count++;
-
-        uint64_t val = *(volatile uint64_t *)&r->slots[slot];
+        // 3. Both paths failed. Check and retry
+        uint64_t val = *(volatile uint64_t *)&r->shared_mem->slots[slot];
         if (val != 0) return 1;
         if (retry_count < 3)
             _mm_pause();
