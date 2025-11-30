@@ -1,4 +1,3 @@
-#include <immintrin.h>
 #include <stdio.h>
 
 #include "rdma.h"

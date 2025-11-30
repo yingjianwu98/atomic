@@ -56,3 +56,12 @@ dkms.conf
 
 cluster.txt
 *.csv
+
+# IDE
+.idea/
+
+# macOS-specific headers (Linux has these from packages)
+include/infiniband/
+
+# Optional docs
+docs/

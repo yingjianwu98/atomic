@@ -13,4 +13,4 @@ RUN apt-get install -y build-essential make rdma-core libibverbs-dev librdmacm-d
 COPY . atomic
 RUN make -C atomic all install
 
-ENTRYPOINT [/bin/bash]
+ENTRYPOINT ["/bin/bash"]

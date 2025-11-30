@@ -159,8 +159,75 @@ int rdma_init(struct rdma_ctx *r, struct config *c) {
         goto err;
     }
 
+    /* LL/SC: Allocate LL/SC memory regions */
+    nb = sizeof(*r->llsc_mem);
+    if (!(r->llsc_mem = calloc(1, nb))) {
+        perror("calloc (llsc_mem)");
+        goto errprep;
+    }
+    r->llsc_mem->frontier = 0;
+
+    r->llsc_mr[0] =
+        ibv_reg_mr(r->pd, r->llsc_mem, nb,
+                   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
+                       IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC);
+    if (!r->llsc_mr[0]) {
+        FAA_LOG("Failed to register LL/SC memory region");
+        goto errllscmem;
+    }
+
+    /* LL/SC: Allocate recovery memory (MRc and MSj) */
+    nb = sizeof(struct recovery_req) * c->n;
+    if (!(r->recovery_reqs = calloc(1, nb))) {
+        perror("calloc (recovery_reqs)");
+        goto errllscmr0;
+    }
+
+    nb = sizeof(struct recovery_resp);
+    if (!(r->recovery_resp = calloc(1, nb))) {
+        perror("calloc (recovery_resp)");
+        goto errrecovreq;
+    }
+
+    nb = sizeof(struct recovery_req) * c->n + sizeof(struct recovery_resp);
+    r->llsc_mr[1] = ibv_reg_mr(r->pd, r->recovery_reqs, nb,
+                               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                                   IBV_ACCESS_REMOTE_READ);
+    if (!r->llsc_mr[1]) {
+        FAA_LOG("Failed to register LL/SC recovery memory region");
+        goto errrecovresp;
+    }
+
+    /* LL/SC: Allocate result buffers */
+    nb = sizeof(struct llsc_slot) * c->n;
+    if (!(r->llsc_results = calloc(1, nb))) {
+        perror("calloc (llsc_results)");
+        goto errllscmr1;
+    }
+
+    nb = sizeof(uint64_t) * c->n;
+    if (!(r->frontier_results = calloc(1, nb))) {
+        perror("calloc (frontier_results)");
+        goto errllscres;
+    }
+
     r->c = c;
     return rdma_handshake(r, c);
+
+errllscres:
+    free(r->llsc_results);
+errllscmr1:
+    ibv_dereg_mr(r->llsc_mr[1]);
+errrecovresp:
+    free(r->recovery_resp);
+errrecovreq:
+    free(r->recovery_reqs);
+errllscmr0:
+    ibv_dereg_mr(r->llsc_mr[0]);
+errllscmem:
+    free(r->llsc_mem);
+errprep:
+    free(r->prepares);
 err:
     free(r->ra);
 errra:
@@ -203,6 +270,12 @@ void rdma_destroy(struct rdma_ctx *r) {
             ibv_dereg_mr(r->mr[i]);
             r->mr[i] = NULL;
         }
+    /* LL/SC: Deregister LL/SC memory regions */
+    for (int i = 0; i < 2; ++i)
+        if (r->llsc_mr[i]) {
+            ibv_dereg_mr(r->llsc_mr[i]);
+            r->llsc_mr[i] = NULL;
+        }
     for (int i = 0; i < r->c->n; ++i) {
         if (r->qp[i]) {
             ibv_destroy_qp(r->qp[i]);
@@ -235,10 +308,21 @@ void rdma_destroy(struct rdma_ctx *r) {
     free(r->shared_mem);
     free(r->prepares);
     free(r->results);
+    /* LL/SC: Free LL/SC memory */
+    free(r->llsc_mem);
+    free(r->recovery_reqs);
+    free(r->recovery_resp);
+    free(r->llsc_results);
+    free(r->frontier_results);
     r->ra = NULL;
     r->qp = NULL;
     r->fqp = NULL;
     r->shared_mem = NULL;
     r->results = NULL;
     r->prepares = NULL;
+    r->llsc_mem = NULL;
+    r->recovery_reqs = NULL;
+    r->recovery_resp = NULL;
+    r->llsc_results = NULL;
+    r->frontier_results = NULL;
 }

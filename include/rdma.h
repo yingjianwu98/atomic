@@ -23,6 +23,30 @@ struct prep_res {
   uint8_t success;
 };
 
+/* LL/SC slot entry
+ * Since RDMA CAS is 64-bit only, we use two fields:
+ * - ballot: 64-bit field for atomic CAS [timestamp:48 | thread_id:16]
+ * - value: 64-bit payload, written after ballot CAS succeeds
+ */
+struct llsc_slot {
+  uint64_t ballot;  // CAS target: encodes thread_id in lower 16 bits
+  uint64_t value;   // Payload, written after winning CAS
+} __attribute__((packed));
+
+/* Recovery request (for RDMA-based coordinated recovery) */
+struct recovery_req {
+  uint16_t thread_id;
+  uint32_t slot;
+} __attribute__((packed));
+
+/* Recovery response (for RDMA-based coordinated recovery) */
+struct recovery_resp {
+  uint16_t thread_id;
+  uint64_t value;
+  uint64_t ballot;
+  uint8_t valid;
+} __attribute__((packed));
+
 /* Per-node RDMA context */
 struct rdma_ctx {
   struct ibv_context *ctx;
@@ -43,6 +67,17 @@ struct rdma_ctx {
   struct remote_attr *ra;
   int max_inline;
   struct config *c;
+
+  /* LL/SC specific fields */
+  struct ibv_mr *llsc_mr[2];           // MRs for LL/SC: [0]=slots, [1]=recovery
+  struct {                             // LL/SC slots (RDMA accessible)
+    uint64_t frontier;                 // Current frontier at this replica
+    struct llsc_slot slots[MAX_SLOTS]; // Mi[t] := ⟨ballot, value⟩
+  } *llsc_mem;
+  struct recovery_req *recovery_reqs;  // MRc[j]: recovery requests (coordinator only)
+  struct recovery_resp *recovery_resp; // MSj: recovery response (spinning area)
+  struct llsc_slot *llsc_results;      // Buffer for LL/SC slot reads
+  uint64_t *frontier_results;          // Buffer for frontier reads
 };
 
 /* Initialize RDMA context */
@@ -61,6 +96,17 @@ int rdma_bcas(struct rdma_ctx *r, uint32_t slot, uint64_t swp);
 /* Slow path */
 int rdma_slow_path(struct rdma_ctx *r, uint32_t slot, uint64_t ballot,
                    uint64_t proposed_value);
+
+/* LL/SC operations */
+int rdma_load_link(struct rdma_ctx *r, uint32_t *out_index, uint64_t *out_value);
+int rdma_store_conditional(struct rdma_ctx *r, uint32_t index, uint64_t value);
+
+/* LL/SC slow path (coordinated recovery) */
+int rdma_llsc_slow_path(struct rdma_ctx *r, uint32_t slot, uint64_t value,
+                        uint16_t thread_id, uint64_t ballot);
+
+/* Coordinator recovery processing (call periodically from coordinator) */
+void rdma_llsc_process_recovery(struct rdma_ctx *r);
 
 /* Timestamp function */
 static inline uint64_t ts_us(void) {

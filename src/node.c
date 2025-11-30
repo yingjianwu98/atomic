@@ -1,7 +1,7 @@
 #include "node.h"
 
-#include <immintrin.h>
 #include <unistd.h>
+#include "arch.h"
 
 #define MAX_RETRIES (5)
 
@@ -80,16 +80,45 @@ int64_t test_and_set(struct node_ctx *ctx, uint32_t slot) {
         uint64_t val = *(volatile uint64_t *)&r->shared_mem->slots[slot];
         if (val != 0) return 1;
         if (retry_count < 3)
-            _mm_pause();
+            cpu_relax();
         else
             usleep(1);
     }
     return -1;
 }
 
+/* LL/SC: Load-Link operation */
+int load_link(struct node_ctx *ctx, uint64_t *out_value) {
+    struct rdma_ctx *r = &ctx->r;
+    int ret;
+
+    pthread_mutex_lock(&ctx->lock);
+    ret = rdma_load_link(r, &ctx->my_index, &ctx->my_value);
+    if (ret == 0 && out_value) {
+        *out_value = ctx->my_value;
+    }
+    pthread_mutex_unlock(&ctx->lock);
+
+    return ret;
+}
+
+/* LL/SC: Store-Conditional operation */
+int store_conditional(struct node_ctx *ctx, uint64_t value) {
+    struct rdma_ctx *r = &ctx->r;
+    int ret;
+
+    pthread_mutex_lock(&ctx->lock);
+    ret = rdma_store_conditional(r, ctx->my_index, value);
+    pthread_mutex_unlock(&ctx->lock);
+
+    return ret;
+}
+
 int node_init(struct node_ctx *ctx, struct config *c) {
     ctx->id = c->host_id;
     ctx->seed = (uint32_t)time(0) ^ (uint32_t)ctx->id;
+    ctx->my_index = 0;
+    ctx->my_value = 0;
     pthread_mutex_init(&ctx->lock, 0);
     return rdma_init(&ctx->r, c);
 }

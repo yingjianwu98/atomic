@@ -9,6 +9,8 @@ struct node_ctx {
   uint32_t seed;
   struct rdma_ctx r;
   pthread_mutex_t lock;
+  uint32_t my_index;  // LL/SC: Current index from Load-Link
+  uint64_t my_value;  // LL/SC: Current value from Load-Link
 };
 
 /* Initialize node context */
@@ -20,5 +22,9 @@ void node_destroy(struct node_ctx *ctx);
 /* Distributed atomic operations */
 int64_t fetch_and_add(struct node_ctx *ctx);
 int64_t test_and_set(struct node_ctx *ctx, uint32_t slot);
+
+/* LL/SC operations */
+int load_link(struct node_ctx *ctx, uint64_t *out_value);
+int store_conditional(struct node_ctx *ctx, uint64_t value);
 
 #endif /* NODE_H */
